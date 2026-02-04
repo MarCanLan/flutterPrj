@@ -1,4 +1,5 @@
-import 'dart:async'; // Necesario para el Timer
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:supersearch/screens/search/tile.dart';
@@ -14,32 +15,20 @@ class Search extends StatefulWidget {
 class _SearchState extends State<Search> {
   List<String>? _results;
   String _input = '';
-  Timer? _debounce; // Temporizador para no saturar la búsqueda
-  bool _isLoading = false;
-
-  @override
-  void dispose() {
-    _debounce?.cancel(); // Cancelar el timer si se cierra la pantalla
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Search Users'),
-        backgroundColor: Colors.red, // Coincide con tu imagen
-        elevation: 0,
+        backgroundColor: Colors.red,
       ),
       body: Column(
         children: [
-          Container(
-            color: Colors.white, // Fondo blanco para el input como en la imagen
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
             child: TextFormField(
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Colors.black, // Texto negro para contraste
-              ),
+              style: Theme.of(context).textTheme.bodyLarge,
               onChanged: _onSearchFieldChanged,
               autocorrect: false,
               autofocus: true,
@@ -51,105 +40,104 @@ class _SearchState extends State<Search> {
                 enabledBorder: InputBorder.none,
                 errorBorder: InputBorder.none,
                 disabledBorder: InputBorder.none,
-                // Añadimos un indicador de carga pequeño en el input
-                suffixIcon: _isLoading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: Padding(
-                          padding: EdgeInsets.all(10.0),
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      )
-                    : null,
               ),
             ),
           ),
-          Expanded(child: _buildBody()),
+          Expanded(
+            child: (_results ?? []).isNotEmpty
+                ? GridView.count(
+                    childAspectRatio: 1,
+                    crossAxisCount: 2,
+                    padding: const EdgeInsets.all(2.0),
+                    mainAxisSpacing: 1.0,
+                    crossAxisSpacing: 1.0,
+                    children: _results!.map((r) => Tile(r)).toList(),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.only(top: 200),
+                    child: _results == null
+                        ? Container()
+                        : Text(
+                            "No results for '$_input'",
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                  ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildBody() {
-    if (_results == null) {
-      // Estado inicial: no se ha buscado nada
-      return Container();
-    }
-
-    if (_results!.isEmpty) {
-      return Center(
-        child: Text(
-          "No results for '$_input'",
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      );
-    }
-
-    return GridView.builder(
-      itemCount: _results!.length,
-      padding: EdgeInsets.zero, // Quitamos padding para que toque los bordes
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2, // 2 columnas como en la imagen
-        childAspectRatio: 1.0, // Cuadrados perfectos
-        mainAxisSpacing: 0, // Sin espacio entre cuadros (o muy poco)
-        crossAxisSpacing: 0,
-      ),
-      itemBuilder: (context, index) {
-        return Tile(_results![index]);
-      },
-    );
-  }
-
-  /// Maneja el cambio de texto con un "Debounce"
-  void _onSearchFieldChanged(String value) {
+  /// Handles user entering text into the search field. We kick off a search for
+  /// every letter typed.
+  _onSearchFieldChanged(String value) async {
     setState(() {
       _input = value;
+      if (value.isEmpty) {
+        // null is a sentinal value that allows us more control the UI
+        // for a better user experience. instead of showing 'No results for ''",
+        // if this is null, it will just show nothing
+        _results = null;
+      }
     });
 
-    // Si el usuario borra todo, limpiamos
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    final results = await _searchUsers(value);
 
-    if (value.isEmpty) {
-      setState(() {
-        _results = null;
-        _isLoading = false;
-      });
-      return;
-    }
-
-    // Esperamos 500ms después de que deje de escribir para buscar
-    _debounce = Timer(const Duration(milliseconds: 500), () async {
-      setState(() => _isLoading = true);
-      final results = await _searchUsers(value);
-      setState(() {
-        _results = results;
-        _isLoading = false;
-      });
+    setState(() {
+      _results = results;
     });
   }
 
+  /// Searches our user database via the supabase_flutter package.
+  ///
+  /// Returns a list of user names.
+  ///
+  /// WARNING:
+  /// - in a more realistic example, this would be moved to a "repository" instead
+  ///   optionally with something like a FutureBuilder
+  /// - check fluttercrashcourse.com for tutorials on these concepts
   Future<List<String>> _searchUsers(String name) async {
-    try {
-      // NOTA: Asegúrate de que tu tabla en Supabase tenga el índice 'fts' configurado
-      // Si no tienes configuración Full Text Search, usa .ilike() en su lugar.
-      final result = await Supabase.instance.client
-          .from('names')
-          .select('fname, lname')
-          .textSearch('fname', "$name:*") // Búsqueda parcial
-          .limit(50);
+    // here, we leverage Supabase's (Postgres') full text search feature
+    // for super fast text searching without the need for something overkill for
+    // an example like this such as ElasticSearch or Algolia
+    //
+    // more info on Supabase's full text search here
+    // https://supabase.com/docs/guides/database/full-text-search
 
-      final List<String> names = [];
+    // WARNING: we aren't doing proper error handling here,
+    // as this is an example but typically we'd handle any exceptions via the
+    // callee of this function
+    // NOTE: this seaches our 'fts' (full text search column)
+    // NOTE: 'limit()' will improve the performance of the call as well.
+    // normally, we'd use a proper backend search index that would provide
+    // us with the most relevant results, vs simply using a wildcard match
+    final result = await Supabase.instance.client
+        .from('names')
+        .select('fname, lname')
+        .textSearch('fts', "$name:*")
+        .limit(100);
 
-      // Manejo seguro de datos dinámicos
-      final data = result as List<dynamic>;
-      for (var v in data) {
-        names.add("${v['fname']} ${v['lname']}");
-      }
-      return names;
-    } catch (e) {
-      print('Error buscando: $e');
+    // WARNING: we aren't doing proper response error code handling here.
+    // normally, we're present some kind of feedback to the user if this fails
+    // and optionally report it to an external tracking system such as Sentry,
+    // Rollbar, etc
+    if (result.isEmpty) {
+      // ignore: avoid_print
+      print('error: ${result.toString()}');
       return [];
     }
+
+    final List<String> names = [];
+
+    // convert results into a list here
+    // 'result.data' is a list of Maps, where each map represents a returned
+    // row in our database. each key of the map represents a table column
+    for (var v in ((result) as List<dynamic>)) {
+      // NOTE: string formatting over many items can be a tad resource intensive
+      // but since this is across a limited set of results, it should be fine.
+      // alternatively, we can format this directly in the supabase query
+      names.add("${v['fname']} ${v['lname']}");
+    }
+    return names;
   }
 }
